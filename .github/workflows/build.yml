@@ -52,9 +52,9 @@ jobs:
           - version: 7.1
             platform: denverton
             parm: "dev-v7 prod-v7"
-          #- version: 7.1
-          #  platform: epyc7002
-          #  parm: "dev-v7 prod-v7"
+          - version: 7.1
+            platform: epyc7002
+            parm: "dev-v7 prod-v7"
           - version: 7.1
             platform: geminilake
             parm: "dev-v7 prod-v7"
@@ -66,6 +66,9 @@ jobs:
             parm: "dev-v7 prod-v7"
           - version: 7.1
             platform: v1000
+            parm: "dev-v7 prod-v7"
+          - version: 7.1
+            platform: kvmx64
             parm: "dev-v7 prod-v7"
 
           - version: 7.2
@@ -86,9 +89,9 @@ jobs:
           - version: 7.2
             platform: denverton
             parm: "dev-v7 prod-v7"
-          #- version: 7.2
-          #  platform: epyc7002
-          #  parm: "dev-v7 prod-v7"
+          - version: 7.2
+            platform: epyc7002
+            parm: "dev-v7 prod-v7"
           - version: 7.2
             platform: geminilake
             parm: "dev-v7 prod-v7"
@@ -100,6 +103,9 @@ jobs:
             parm: "dev-v7 prod-v7"
           - version: 7.2
             platform: v1000
+            parm: "dev-v7 prod-v7"
+          - version: 7.2
+            platform: kvmx64
             parm: "dev-v7 prod-v7"
 
     runs-on: ubuntu-latest
@@ -126,7 +132,7 @@ jobs:
           sudo ./EnvDeploy -q -v ${{ matrix.version }} -p ${{ matrix.platform }}
 
           # Fault tolerance of pkgscripts-ng
-          if [ "${{ matrix.platform }}" == "broadwellntbap" ] && [ "${{ matrix.version }}" == "7.1" ]; then
+          if [[ "${{ matrix.platform }}" == "broadwellntbap" && "${{ matrix.version }}" == "7.1" ]]; then
             sed -i '/		broadwellnk	BROADWELLNK/a\		broadwellntbap  BROADWELLNTBAP                  linux-4.4.x             Intel Broadwell with ntb kernel config in AP mode' ${ROOT_PATH}/pkgscripts-ng/include/platforms
           fi
 
@@ -143,7 +149,7 @@ jobs:
           sed -i '/PLATFORM_FAMILY/a\\techo "PRODUCT=$PRODUCT" >> $file\n\techo "KSRC=$KERNEL_SEARCH_PATH" >> $file\n\techo "LINUX_SRC=$KERNEL_SEARCH_PATH" >> $file' include/build
           ./SynoBuild -c -p ${{ matrix.platform }}
 
-          while read line; do if [ ${line:0:1} != "#" ]; then export ${line%%=*}="${line#*=}"; fi; done < /env${BUILD_ARCH}.mak
+          while read -r line; do if [ ${line:0:1} != "#" ]; then export ${line%%=*}="${line#*=}"; fi; done < /env${BUILD_ARCH}.mak
           if [ -f "${KSRC}/Makefile" ]; then
             # gcc issue "unrecognized command-line option '--param=allow-store-data-races=0'".
             [ "${{ matrix.version }}" == "7.2" ] && sed -i 's/--param=allow-store-data-races=0/--allow-store-data-races/g' ${KSRC}/Makefile
@@ -167,25 +173,21 @@ jobs:
             [ -n "${CCVER}" ] && echo "CCVER=${CCVER}" >> $GITHUB_ENV
           fi
 
-      - name: Get Src
-        run: |
-          ROOT_PATH=${{ github.workspace }}
-
-          mkdir -p ${ROOT_PATH}/source/output
-          repo=${{ github.server_url }}/${{ github.repository }}
-          git clone ${repo} ${ROOT_PATH}/source/input
-
-          sudo cp -a ${ROOT_PATH}/source ${ROOT_PATH}/build_env/ds.${{ matrix.platform }}-${{ matrix.version }}/
-
       - name: Make LKMs
         run: |
-          ROOT_PATH=${{ github.workspace }}
-
           sudo chroot build_env/ds.${{ matrix.platform }}-${{ matrix.version }} << "EOF"
           sed -i 's/^CFLAGS=/#CFLAGS=/g; s/^CXXFLAGS=/#CXXFLAGS=/g' /env${BUILD_ARCH}.mak
-          while read line; do if [ ${line:0:1} != "#" ]; then export ${line%%=*}="${line#*=}"; fi; done < /env${BUILD_ARCH}.mak
+          while read -r line; do if [ ${line:0:1} != "#" ]; then export ${line%%=*}="${line#*=}"; fi; done < /env${BUILD_ARCH}.mak
+          mkdir -p /source/output
+
+          repo=${{ github.server_url }}/${{ github.repository }}
+          # 5.10.55 Temporary use of https://github.com/XPEnology-Community/redpill-lkm5
+          # And currently only USB OK, @jim3ma is adapting to 7.2.
+          [ "${KVER:0:1}" = "5" ] && repo=https://github.com/AuxXxilium/redpill-lkm5
+
+          git clone -c http.sslVerify=false ${repo} /source/input
           cd /source/input
-          [ -z "$(grep 'env.mak' Makefile)" ] && sed -i '1 i include /env.mak' Makefile
+          [ -z "`grep 'env.mak' Makefile`" ] && sed -i '1 i include /env.mak' Makefile
           array=(${{ matrix.parm }})
           for a in ${array[@]}
           do
@@ -194,7 +196,11 @@ jobs:
               strip -g redpill.ko    # Discard symbols from object files. 
               RPKOVER=$(modinfo --field=vermagic redpill.ko | awk '{print $1}')
               gzip redpill.ko
-              mv -f ./redpill.ko.gz /source/output/rp-${{ matrix.platform }}-${RPKOVER/+/}-`echo ${a} | awk -F'-' '{print $1}'`.ko.gz
+              if [ "${{ matrix.platform }}" = "epyc7002" ]; then
+                mv -f ./redpill.ko.gz /source/output/rp-${{ matrix.platform }}-${{ matrix.version }}-${RPKOVER/+/}-`echo ${a} | awk -F'-' '{print $1}'`.ko.gz
+              else
+                mv -f ./redpill.ko.gz /source/output/rp-${{ matrix.platform }}-${RPKOVER/+/}-`echo ${a} | awk -F'-' '{print $1}'`.ko.gz
+              fi
             else
               echo "error"
             fi
@@ -203,6 +209,8 @@ jobs:
           ls -al /source/output
           EOF
 
+          ROOT_PATH=${{ github.workspace }}
+          mkdir -p ${ROOT_PATH}/source
           sudo cp -a ${ROOT_PATH}/build_env/ds.${{ matrix.platform }}-${{ matrix.version }}/source/output ${ROOT_PATH}/source/
 
       - name: Upload to Artifacts
@@ -250,11 +258,11 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
           else
-            LATEST_TAG="`curl -skL "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r ".tag_name" 2>/dev/null`"
-            if [ -n "${LATEST_TAG}" -a "`echo ${LATEST_TAG} | cut -d '.' -f 1,2`" = "`date +'%y.%-m'`" ]; then  # format %y.%-m.$i
+            LATEST_TAG="$(curl -skL "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r ".tag_name" 2>/dev/null)"
+            if [[ -n "${LATEST_TAG}" && "`echo ${LATEST_TAG} | cut -d '.' -f 1,2`" = "`date +'%y.%-m.%-d'`" ]]; then  # format %y.%-m.$i
               VERSION="`echo ${LATEST_TAG} | awk -F '.' '{$3=$3+1}1' OFS='.'`"
             else
-              VERSION="`date +'%y.%-m'`.0"
+              VERSION="`date +'%y.%-m.%-d'`"
             fi
           fi
 
